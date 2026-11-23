@@ -1,6 +1,8 @@
-import type { CloudBinding } from '../session-runtime/binding-store.js'
+import type { CloudBinding, PersistedSandboxBinding } from '../session-runtime/binding-store.js'
 import type { CloudSeed } from '../cloud-guest.js'
 import type { DivergencePatch, DivergenceSummary } from '../web/divergence.js'
+import type { LaunchProgress } from '../web/launch-progress.js'
+import type { SnapshotMeta } from '../web/workspace-snapshot.js'
 
 /**
  * Host seam for a swappable cloud machine. Handoff orchestration calls this
@@ -57,6 +59,40 @@ export interface AvailableBaseline {
 
 export type BaselineRead = AvailableBaseline | { available: false; reason: string }
 
+/** One host row in the local status poll. Auth and settings are not part of this report. */
+export interface CloudHostSessionStatus {
+  sessionId: string
+  title?: string
+  workspace: string
+  environment: 'production' | 'development'
+  state: ReportedHostPhase
+  sandbox: {
+    name: string
+    cwd: string
+    workspaceRoot: string
+    sourceCwd: string
+    startedAt: string
+    uptimeMs: number
+    status?: string
+    image?: string
+    memory?: number
+    region?: string
+    ttl?: string
+    createdAt?: string
+    lastUsedAt?: string
+    expiresIn?: number
+  }
+  provenance: SnapshotMeta
+  live: { processes: number }
+  error?: string
+  cloud?: { phase: CloudBindingPhase }
+}
+
+export interface CloudHostReport {
+  sandboxes: CloudHostSessionStatus[]
+  progress?: LaunchProgress
+}
+
 export interface CloudHostProvider {
   /** Create a remote DSH host and snapshot the current worktree onto it. One launch at a time. */
   createHost(cwd: string): Promise<PreparedCloudHost>
@@ -69,6 +105,15 @@ export interface CloudHostProvider {
 
   /** Attach an existing host. Does not upload a new snapshot. */
   attachHost(sessionId: string): Promise<{ attachment: 'ready' | 'missing'; state: CloudHostState }>
+
+  /** Persisted binding for one session. Undefined when the session has no host. */
+  binding(sessionId: string): PersistedSandboxBinding | undefined
+
+  /** Cloud host that owns this session id, including a related child session. */
+  cloudOwner(sessionId: string): string | undefined
+
+  /** Probe known hosts. Does not upload a snapshot and does not extend host TTL. */
+  status(): Promise<CloudHostReport>
 
   /** Resolve the in-memory host for a session. Fails closed when it is absent. */
   connect(sessionId: string, missing: string): CloudSessionHandle

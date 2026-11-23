@@ -42,7 +42,7 @@ function provider() {
     name: 'dsh-abc',
     cwd: '/workspace/app',
     workspaceRoot: '/workspace',
-    phase: 'ready' as const,
+    phase: 'ready' as 'creating' | 'restoring' | 'ready' | 'failed',
     getSandbox: vi.fn(async () => sandbox),
   }
   const prepared = { snapshot: { repoRoot: '/repo' }, runtime }
@@ -51,8 +51,10 @@ function provider() {
     discard: vi.fn(async () => undefined),
     bind: vi.fn(async () => ({ runtime, workspace: 'ws' })),
     reconnect: vi.fn(async (): Promise<'ready' | 'missing'> => 'ready'),
-    get: vi.fn(() => ({ runtime })),
-    binding: vi.fn(() => ({ cloud: binding })),
+    get: vi.fn((): { runtime: { phase: 'creating' | 'restoring' | 'ready' | 'failed' } } | undefined => ({ runtime })),
+    binding: vi.fn((): { cloud: CloudBinding; sessionId: string; sandboxName: string; sourceRoot: string } | undefined => ({ cloud: binding, sessionId: 'session-1', sandboxName: 'dsh-abc', sourceRoot: '/repo' })),
+    cloudOwner: vi.fn((id: string) => id === 'child-1' ? 'session-1' : undefined),
+    status: vi.fn(async () => ({ sandboxes: [{ sessionId: 'session-1', state: 'ready', cloud: { phase: 'remote' as const } }] })),
     close: vi.fn(async () => undefined),
     updateCloud: vi.fn(),
     cloudProgress: vi.fn(),
@@ -73,11 +75,22 @@ describe('CloudHostProvider', () => {
     expect(handoff).not.toContain('SandboxInstance')
     expect(handoff).not.toContain('cloud/bootstrap')
     expect(handoff).not.toContain('getSandbox')
+    expect(handoff).not.toMatch(/this\.ctx\.blaxelSessions\./)
+    const web = source('../src/web.ts')
+    expect(web).not.toContain('blaxelSessions.status')
+    expect(web).toContain('cloudHostProvider')
+    expect(web).toContain('attachHost')
+    expect(web).toContain('.status()')
+    expect(web).toContain('settingsStatus')
+    expect(web).toContain('blaxelSessions.reconnect')
     expect(adapter).not.toContain("from '@blaxel/core'")
     expect(adapter).toContain('bootCloudHost')
     expect(adapter).toContain('sessions.prepare')
     expect(adapter).toContain('sessions.reconnect')
     expect(adapter).toContain('sessions.close')
+    expect(adapter).toContain('sessions.binding')
+    expect(adapter).toContain('sessions.cloudOwner')
+    expect(adapter).toContain('sessions.status')
   })
 
   it('maps runtime phases onto host state', () => {
@@ -112,9 +125,35 @@ describe('CloudHostProvider', () => {
   it('attaches an existing host without snapshotting', async () => {
     const { host, sessions } = provider()
     await expect(host.attachHost('session-1')).resolves.toEqual({ attachment: 'ready', state: 'ready' })
+    sessions.get.mockReturnValueOnce({ runtime: { phase: 'creating' } })
+    await expect(host.attachHost('session-1')).resolves.toEqual({ attachment: 'ready', state: 'preparing' })
+    sessions.get.mockReturnValueOnce({ runtime: { phase: 'failed' } })
+    await expect(host.attachHost('session-1')).resolves.toEqual({ attachment: 'ready', state: 'failed' })
+    sessions.get.mockReturnValueOnce(undefined)
+    await expect(host.attachHost('session-1')).resolves.toEqual({ attachment: 'ready', state: 'failed' })
     sessions.reconnect.mockResolvedValueOnce('missing')
     await expect(host.attachHost('session-1')).resolves.toEqual({ attachment: 'missing', state: 'gone' })
     expect(sessions.prepare).not.toHaveBeenCalled()
+  })
+
+  it('reads bindings and ownership without calling the sandbox', async () => {
+    const { host, sessions } = provider()
+    expect(host.binding('session-1')).toMatchObject({ sandboxName: 'dsh-abc', cloud: { phase: 'preparing' } })
+    expect(host.cloudOwner('child-1')).toBe('session-1')
+    expect(host.cloudOwner('session-1')).toBeUndefined()
+    sessions.binding.mockReturnValueOnce(undefined)
+    expect(host.binding('local')).toBeUndefined()
+    expect(sessions.prepare).not.toHaveBeenCalled()
+    expect(sessions.reconnect).not.toHaveBeenCalled()
+  })
+
+  it('probes host status without snapshotting or reading settings', async () => {
+    const { host, sessions } = provider()
+    const report = { sandboxes: [{ sessionId: 'session-1', state: 'ready' as const, cloud: { phase: 'remote' as const } }] }
+    sessions.status.mockResolvedValueOnce(report)
+    await expect(host.status()).resolves.toBe(report)
+    expect(sessions.prepare).not.toHaveBeenCalled()
+    expect(sessions.reconnect).not.toHaveBeenCalled()
   })
 
   it('treats a missing remote process as not running and other lookup failures as errors', async () => {

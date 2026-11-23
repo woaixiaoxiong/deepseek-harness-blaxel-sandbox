@@ -53,10 +53,11 @@ export default class BlaxelCloudHandoff extends Service implements CloudExecutio
   }
 
   blocks(sessionId: string): boolean {
+    const host = this.host()
     const visited = new Set<string>()
     let id: string | undefined = sessionId
     while (id !== undefined && !visited.has(id)) {
-      if (this.moving.has(id) || this.ctx.blaxelSessions.cloudOwner(id) !== undefined) return true
+      if (this.moving.has(id) || host.cloudOwner(id) !== undefined) return true
       visited.add(id)
       id = this.ctx.sessions.get(SessionId(id))?.header.parentSession
     }
@@ -152,7 +153,7 @@ export default class BlaxelCloudHandoff extends Service implements CloudExecutio
     if (this.moving.has(sessionId)) throw new Error('The cloud session is still being prepared')
     const host = this.host()
     if ((await host.attachHost(sessionId)).attachment === 'missing') throw new Error('This cloud sandbox no longer exists. Its remote work cannot be recovered; use Continue locally to retain the original conversation.')
-    const binding = this.ctx.blaxelSessions.binding(sessionId)
+    const binding = host.binding(sessionId)
     if (!binding?.cloud) throw new Error('Reconnect the cloud sandbox before opening the session')
     const remote = host.connect(sessionId, 'Reconnect the cloud sandbox before opening the session')
     if (!await host.agentRunning(remote)) {
@@ -201,7 +202,7 @@ export default class BlaxelCloudHandoff extends Service implements CloudExecutio
 
   async returnLocal(sessionId: string, reviewHash: string): Promise<Record<string, unknown>> {
     if (this.returning.has(sessionId)) throw new Error('This session is already moving back to local')
-    const binding = this.ctx.blaxelSessions.binding(sessionId)
+    const binding = this.host().binding(sessionId)
     try {
       const receipt = JSON.parse(await readFile(this.receiptPath(sessionId), 'utf8')) as { sandboxName: string; result: Record<string, unknown>; continuation?: ReturnType<typeof createUserMessage> }
       if (binding === undefined || binding.sandboxName === receipt.sandboxName) {
