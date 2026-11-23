@@ -5,10 +5,10 @@ import type { BlaxelHttpRequest, BlaxelHttpResponse, BlaxelWebRoute } from '../s
 import { apply, inject } from '../src/web.js'
 import { requireReadyModel } from '../src/web/model-readiness.js'
 
-function request(action: 'open' | 'move' | 'reconnect' | 'sync-local', body: object): BlaxelHttpRequest {
+function request(action: 'open' | 'move' | 'reconnect' | 'sync-local' | 'status', body: object, method: 'GET' | 'POST' = 'POST'): BlaxelHttpRequest {
   const encoded = Buffer.from(JSON.stringify(body))
   const req = {
-    method: 'POST',
+    method,
     url: `/blaxel/api/${action}`,
     headers: { host: '127.0.0.1:3080', 'x-dsh-blaxel-action': action },
     on(event: string, listener: (value?: Buffer) => void) {
@@ -188,6 +188,99 @@ describe('Blaxel Web routing', () => {
     expect(consented.status()).toBe(200)
     expect(consented.body()).toEqual({ ok: true, outcome: 'recreated' })
     expect(recreateMissing).toHaveBeenCalledWith('remote-session')
+  })
+
+  it('reattaches a cloud host through the provider and opens its preview', async () => {
+    let route: BlaxelWebRoute | undefined
+    const reconnect = vi.fn(async () => 'ready')
+    const get = vi.fn(() => ({ runtime: { phase: 'ready' } }))
+    const open = vi.fn(async () => ({ url: 'https://preview.example/session' }))
+    const ctx = {
+      effect: (setup: () => unknown) => setup(),
+      webServer: { register: (registered: BlaxelWebRoute) => { route = registered; return () => undefined } },
+      blaxelSessions: {
+        binding: () => ({ cloud: { phase: 'remote', localOrigin: 'http://127.0.0.1:3080' }, sourceRoot: '/repo', title: 'Moved', sandboxName: 'dsh-1' }),
+        reconnect,
+        get,
+        recreateMissing: vi.fn(),
+      },
+    }
+    apply({ connection: { requestRejection: () => undefined }, blaxelCloud: { open }, ...ctx } as never)
+    if (route === undefined) throw new Error('Blaxel Web route was not registered')
+
+    const target = response()
+    await route.handler(request('reconnect', { sessionId: 'remote-session' }), target.res)
+    expect(target.status()).toBe(200)
+    expect(target.body()).toEqual({ ok: true, outcome: 'reconnected', url: 'https://preview.example/session' })
+    expect(reconnect).toHaveBeenCalledWith('remote-session')
+    expect(get).toHaveBeenCalledWith('remote-session')
+    expect(open).toHaveBeenCalledWith('remote-session')
+    expect(ctx.blaxelSessions.recreateMissing).not.toHaveBeenCalled()
+  })
+
+  it('replaces a missing cloud host with the same Move once the user consents', async () => {
+    let route: BlaxelWebRoute | undefined
+    const recreateMissing = vi.fn()
+    const discard = vi.fn(async () => undefined)
+    const move = vi.fn(async () => ({ sessionId: 'remote-session', url: 'https://preview.example/new' }))
+    const modelApi = readyModelApi()
+    const ctx = {
+      effect: (setup: () => unknown) => setup(),
+      webServer: { register: (registered: BlaxelWebRoute) => { route = registered; return () => undefined } },
+      ...modelApi,
+      sessionController: {
+        ...modelApi.sessionController,
+        list: vi.fn(async () => ({ items: [{ sessionId: 'remote-session', running: false }] })),
+      },
+      blaxelSessions: {
+        binding: () => ({ cloud: { phase: 'remote', localOrigin: 'http://127.0.0.1:3080' }, sourceRoot: '/repo', title: 'Moved' }),
+        reconnect: vi.fn(async () => 'missing'),
+        recreateMissing,
+      },
+    }
+    apply({ connection: { requestRejection: () => undefined }, blaxelCloud: { discard, move }, ...ctx } as never)
+    if (route === undefined) throw new Error('Blaxel Web route was not registered')
+
+    const asked = response()
+    await route.handler(request('reconnect', { sessionId: 'remote-session' }), asked.res)
+    expect(asked.status()).toBe(409)
+    expect(asked.body()).toEqual({ ok: false, error: 'sandbox-missing' })
+    expect(discard).not.toHaveBeenCalled()
+    expect(move).not.toHaveBeenCalled()
+
+    const consented = response()
+    await route.handler(request('reconnect', { sessionId: 'remote-session', recreate: true }), consented.res)
+    expect(consented.status()).toBe(200)
+    expect(consented.body()).toEqual({ ok: true, outcome: 'recreated', url: 'https://preview.example/new' })
+    expect(discard).toHaveBeenCalledWith('remote-session')
+    expect(move).toHaveBeenCalledWith('remote-session', '/repo', 'http://127.0.0.1:3080', 'Moved')
+    expect(recreateMissing).not.toHaveBeenCalled()
+  })
+
+  it('reports host status through the provider and leaves login settings local', async () => {
+    let route: BlaxelWebRoute | undefined
+    const status = vi.fn(async () => ({ sandboxes: [{ sessionId: 'remote-session', state: 'ready', cloud: { phase: 'remote' } }] }))
+    const settingsStatus = vi.fn(async () => ({ connection: { authenticated: true, source: 'cli' } }))
+    const prepare = vi.fn()
+    const ctx = {
+      effect: (setup: () => unknown) => setup(),
+      webServer: { register: (registered: BlaxelWebRoute) => { route = registered; return () => undefined } },
+      blaxelSessions: { status, settingsStatus, prepare, binding: () => undefined },
+    }
+    apply({ connection: { requestRejection: () => undefined }, blaxelCloud: {}, ...ctx } as never)
+    if (route === undefined) throw new Error('Blaxel Web route was not registered')
+
+    const target = response()
+    await route.handler(request('status', {}, 'GET'), target.res)
+    expect(target.status()).toBe(200)
+    expect(target.body()).toEqual({
+      ok: true,
+      sandboxes: [{ sessionId: 'remote-session', state: 'ready', cloud: { phase: 'remote' } }],
+      settings: { connection: { authenticated: true, source: 'cli' } },
+    })
+    expect(status).toHaveBeenCalledOnce()
+    expect(settingsStatus).toHaveBeenCalledOnce()
+    expect(prepare).not.toHaveBeenCalled()
   })
 
   it('refuses to move changes home while the session is still running a turn', async () => {

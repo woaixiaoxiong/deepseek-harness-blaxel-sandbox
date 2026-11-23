@@ -1,6 +1,7 @@
 import { draftRequest } from './cloud/draft.js'
 import { returnLanding } from './web/return-landing.js'
 import { cloudHandoff } from './cloud.js'
+import { cloudHostProvider } from './cloud-host/index.js'
 import '@deepseek-ai/dsh-client-connection'
 import type { BlaxelHttpRequest, BlaxelHttpResponse, BlaxelWebContext } from './web/context.js'
 import {
@@ -79,24 +80,33 @@ async function handleReconnect(req: BlaxelHttpRequest, res: BlaxelHttpResponse, 
   if (!permitsAction(req, 'reconnect')) return writeJson(res, 403, { ok: false, error: 'action-not-authorized' })
   try {
     const { sessionId, recreate } = await readReconnectRequest(req)
-    const binding = ctx.blaxelSessions.binding(sessionId)
-    const result = await ctx.blaxelSessions.reconnect(sessionId)
-    if (result === 'missing') {
-      // Replacing a lost sandbox discards whatever lived only inside it, so it
-      // never happens without the user's explicit consent.
-      if (!recreate) return writeJson(res, 409, { ok: false, error: SANDBOX_MISSING })
-      if (!await sourceIsIdle(ctx, sessionId)) throw new Error('Wait for the current turn to finish before reconnecting this sandbox')
-      await requireReadyModel(ctx, sessionId)
-      if (binding?.cloud !== undefined) {
+    const host = cloudHostProvider(ctx)
+    const binding = host.binding(sessionId)
+    // Cloud hosts attach through the provider. Tool-only sandboxes stay on the session runtime.
+    if (binding?.cloud !== undefined) {
+      const attached = await host.attachHost(sessionId)
+      if (attached.attachment === 'missing') {
+        // Replacing a lost sandbox discards whatever lived only inside it, so it
+        // never happens without the user's explicit consent.
+        if (!recreate) return writeJson(res, 409, { ok: false, error: SANDBOX_MISSING })
+        if (!await sourceIsIdle(ctx, sessionId)) throw new Error('Wait for the current turn to finish before reconnecting this sandbox')
+        await requireReadyModel(ctx, sessionId)
         await cloudHandoff(ctx).discard(sessionId)
         const moved = await cloudHandoff(ctx).move(sessionId, binding.sourceRoot, binding.cloud.localOrigin, binding.title)
         return writeJson(res, 200, { ok: true, outcome: 'recreated', url: moved.url })
       }
+      const opened = await cloudHandoff(ctx).open(sessionId)
+      return writeJson(res, 200, { ok: true, outcome: 'reconnected', ...opened })
+    }
+    const result = await ctx.blaxelSessions.reconnect(sessionId)
+    if (result === 'missing') {
+      if (!recreate) return writeJson(res, 409, { ok: false, error: SANDBOX_MISSING })
+      if (!await sourceIsIdle(ctx, sessionId)) throw new Error('Wait for the current turn to finish before reconnecting this sandbox')
+      await requireReadyModel(ctx, sessionId)
       await ctx.blaxelSessions.recreateMissing(sessionId)
       return writeJson(res, 200, { ok: true, outcome: 'recreated' })
     }
-    const opened = binding?.cloud === undefined ? {} : await cloudHandoff(ctx).open(sessionId)
-    writeJson(res, 200, { ok: true, outcome: 'reconnected', ...opened })
+    writeJson(res, 200, { ok: true, outcome: 'reconnected' })
   } catch (error) {
     writeJson(res, 422, { ok: false, error: error instanceof Error ? error.message : 'Could not reconnect the sandbox' })
   }
@@ -129,7 +139,7 @@ async function handleSyncLocal(req: BlaxelHttpRequest, res: BlaxelHttpResponse, 
   if (!permitsAction(req, 'sync-local')) return writeJson(res, 403, { ok: false, error: 'action-not-authorized' })
   try {
     const { sessionId, reviewHash } = await readCloudReturnRequest(req)
-    if (reviewHash !== undefined || ctx.blaxelSessions.binding(sessionId)?.cloud !== undefined) {
+    if (reviewHash !== undefined || cloudHostProvider(ctx).binding(sessionId)?.cloud !== undefined) {
       if (reviewHash === undefined) throw new Error('Review the changes before moving this cloud session back')
       return writeJson(res, 200, { ok: true, ...await cloudHandoff(ctx).returnLocal(sessionId, reviewHash) })
     }
@@ -171,7 +181,7 @@ export function apply(ctx: BlaxelWebContext): void {
         if (!permitsRead(req)) return writeJson(res, 403, { ok: false, error: 'action-not-authorized' })
         return writeJson(res, 200, {
           ok: true,
-          ...await ctx.blaxelSessions.status(),
+          ...await cloudHostProvider(ctx).status(),
           settings: await ctx.blaxelSessions.settingsStatus(),
         })
       }

@@ -7,6 +7,8 @@ export type {
   CloudAgentSeed,
   CloudBindingPhase,
   CloudHostProvider,
+  CloudHostReport,
+  CloudHostSessionStatus,
   CloudHostState,
   CloudSessionHandle,
   PreparedCloudHost,

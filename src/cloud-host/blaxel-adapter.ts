@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { bootCloudHost, cloudRequest, waitForCloudHost } from '../cloud/bootstrap.js'
-import type { CloudBinding } from '../session-runtime/binding-store.js'
+import type { CloudBinding, PersistedSandboxBinding } from '../session-runtime/binding-store.js'
 import { BlaxelSessionRuntime } from '../session-runtime/service.js'
 import { divergenceReader } from '../web/divergence.js'
 import {
@@ -9,6 +9,7 @@ import {
   type BoundCloudHost,
   type CloudAgentSeed,
   type CloudHostProvider,
+  type CloudHostReport,
   type CloudHostState,
   type CloudSessionHandle,
   type PreparedCloudHost,
@@ -20,9 +21,9 @@ type SessionRuntime = Awaited<ReturnType<BlaxelSessionRuntime['bind']>>['runtime
 /**
  * Blaxel 0.1.4 host adapter.
  *
- * Delegates create, attach, bind, and delete to `BlaxelSessionRuntime`,
- * sandbox access to `BlaxelRuntime`, and boot / preview / freeze to the
- * existing 0.1.4 helpers. `@blaxel/core` stays in those modules.
+ * Delegates create, attach, bind, delete, binding reads, and status probes to
+ * `BlaxelSessionRuntime`, sandbox access to `BlaxelRuntime`, and boot / preview /
+ * freeze to the existing 0.1.4 helpers. `@blaxel/core` stays in those modules.
  * Tool-only filesystem attachment is not this provider.
  */
 class BlaxelPreparedHost implements PreparedCloudHost {
@@ -78,6 +79,18 @@ export class BlaxelCloudHostProvider implements CloudHostProvider {
     if (attachment === 'missing') return { attachment, state: 'gone' }
     const phase = this.sessions.get(sessionId)?.runtime.phase ?? 'failed'
     return { attachment, state: toCloudHostState(phase) }
+  }
+
+  binding(sessionId: string): PersistedSandboxBinding | undefined {
+    return this.sessions.binding(sessionId)
+  }
+
+  cloudOwner(sessionId: string): string | undefined {
+    return this.sessions.cloudOwner(sessionId)
+  }
+
+  async status(): Promise<CloudHostReport> {
+    return await this.sessions.status()
   }
 
   connect(sessionId: string, missing: string): CloudSessionHandle {
