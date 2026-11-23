@@ -9,7 +9,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { sessionPrefixHash } from '../src/cloud/session-transfer.js'
 
 const calls = vi.hoisted(() => ({ cloud: vi.fn(), apply: vi.fn(), reader: vi.fn() }))
-vi.mock('../src/cloud/bootstrap.js', () => ({ cloudRequest: calls.cloud }))
+vi.mock('../src/cloud/bootstrap.js', () => ({ cloudRequest: calls.cloud, bootCloudHost: vi.fn(), waitForCloudHost: vi.fn() }))
 vi.mock('../src/web/local-sync.js', () => ({ applySandboxPatch: calls.apply }))
 vi.mock('../src/web/divergence.js', () => ({ divergenceReader: calls.reader }))
 import BlaxelCloudHandoff from '../src/cloud.js'
