@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { isOptionalDurabilityError } from '../cloud/private-json.js'
 import type { SnapshotMeta } from '../web/workspace-snapshot.js'
 import type { SessionCheckpoint } from '../cloud/related-sessions.js'
 import { validLocalPermissions, type LocalPermissions } from '../cloud/session-transfer.js'
@@ -187,7 +188,11 @@ export class SandboxBindingStore {
       const descriptor = openSync(temporary, 'wx', 0o600)
       try {
         writeFileSync(descriptor, `${JSON.stringify(document, null, 2)}\n`)
-        fsyncSync(descriptor)
+        try {
+          fsyncSync(descriptor)
+        } catch (error) {
+          if (!isOptionalDurabilityError(error)) throw error
+        }
       } finally {
         closeSync(descriptor)
       }
